@@ -4,10 +4,10 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.ContentValues;
 import android.content.Context;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
-import android.net.Uri;
 import android.util.Base64;
 import android.util.Log;
 import android.webkit.JavascriptInterface;
@@ -45,7 +45,20 @@ public class DownloadBridge {
         if (base64Data == null || filename == null) {
             return;
         }
-        IO_EXECUTOR.execute(() -> saveBase64Internal(base64Data, filename, mimeType));
+        String safeFilename = sanitizeFilename(filename);
+        IO_EXECUTOR.execute(() -> saveBase64Internal(base64Data, safeFilename, mimeType));
+    }
+
+    private static String sanitizeFilename(String filename) {
+        if (filename == null) return "download";
+        String safe = filename.trim()
+                .replaceAll("[\\\\/:*?\"<>|\\x00-\\x1F]", "_")
+                .replaceAll("\\s+", " ");
+        while (safe.startsWith(".")) {
+            safe = safe.substring(1);
+        }
+        if (safe.isEmpty()) return "download";
+        return safe.length() > 120 ? safe.substring(0, 120) : safe;
     }
 
     private void saveBase64Internal(String base64Data, String filename, String mimeType) {
@@ -121,7 +134,7 @@ public class DownloadBridge {
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
                 .setContentTitle(success ? "Download complete" : "Download failed")
                 .setContentText(success
-                        ? filename + " \u2192 Downloads/FabiodalezMusic"
+                        ? filename + " → Downloads/FabiodalezMusic"
                         : "Failed to save " + filename)
                 .setAutoCancel(true);
 
