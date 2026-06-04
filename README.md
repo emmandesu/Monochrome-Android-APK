@@ -18,6 +18,20 @@ This repository contains the Android wrapper, native bridges, build automation, 
 - **Security defaults** — Backup disabled, cleartext traffic disabled, and external browser bridge URL validation
 - **Branding** — Fabiodalez Music name, icon, splash screen, and Android packaging
 
+## Native Audio Roadmap
+
+The current app improves WebView playback, but the actual audio pipeline still depends on the WebView/browser engine. That means Android battery optimization, JavaScript GC pauses, Web Audio scheduling, browser resampling, renderer suspension, or renderer memory pressure can still affect playback.
+
+Long term, the project should move the critical playback path into a native audio service. WebView should become the UI/controller, while native code owns decoding, buffering, audio output, MediaSession state, and playback recovery.
+
+See the full design plan: [`docs/native-audio-engine.md`](docs/native-audio-engine.md).
+
+Recommended first native milestone:
+
+> A native service and bridge that can play a generated PCM sine wave for 30 minutes without underruns while the screen is off.
+
+Only after that works should the project add local-file decode, FFmpeg/libavcodec support, and streaming playback handoff.
+
 ## Requirements
 
 The build script is currently written for macOS/Homebrew paths.
@@ -95,6 +109,8 @@ All patches are reverted automatically at the end of the build.
 
 ```text
 Monochrome-Android-APK/
+├── docs/
+│   └── native-audio-engine.md      # Native playback architecture roadmap
 ├── android/
 │   ├── android-service.js          # WebView-side Android bridge and UI fixes
 │   ├── fm-logger.js                # Early console logger injection
@@ -171,6 +187,8 @@ On Android 10 and newer this uses MediaStore. On older Android versions, storage
 
 ## Recommended Next Improvements
 
+- Add a native audio service shell and Capacitor `NativeAudio` plugin
+- Add a native PCM/sine-wave playback smoke test before attempting streaming
 - Add a GitHub Actions workflow to run a lightweight lint/build check on every push
 - Add a release workflow for signed APK/AAB artifacts
 - Move hardcoded Homebrew paths into environment checks with friendly error messages
