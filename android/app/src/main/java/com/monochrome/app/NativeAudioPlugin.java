@@ -66,11 +66,7 @@ public class NativeAudioPlugin extends Plugin {
     public void stopToneTest(PluginCall call) {
         Intent intent = new Intent(getContext(), NativeAudioToneService.class);
         intent.setAction(NativeAudioToneService.ACTION_STOP_TONE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            getContext().startForegroundService(intent);
-        } else {
-            getContext().startService(intent);
-        }
+        getContext().startService(intent);
         call.resolve(snapshotToJsObject(NativeAudioToneService.snapshot()));
     }
 
@@ -111,7 +107,6 @@ public class NativeAudioPlugin extends Plugin {
             try {
                 getContext().unregisterReceiver(stateReceiver);
             } catch (IllegalArgumentException ignored) {
-                // Already unregistered by the framework/activity lifecycle.
             }
             stateReceiver = null;
         }
