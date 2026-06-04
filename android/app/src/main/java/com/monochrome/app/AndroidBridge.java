@@ -46,15 +46,30 @@ public class AndroidBridge {
 
     @JavascriptInterface
     public void openInBrowser(String url) {
-        if (url == null || url.isEmpty()) return;
+        if (url == null || url.trim().isEmpty()) return;
+
+        Uri uri;
+        try {
+            uri = Uri.parse(url.trim());
+        } catch (Exception e) {
+            Log.w(TAG, "Rejected malformed URL", e);
+            return;
+        }
+
+        String scheme = uri.getScheme();
+        if (!"https".equalsIgnoreCase(scheme) && !"http".equalsIgnoreCase(scheme)) {
+            Log.w(TAG, "Rejected non-web URL scheme: " + scheme);
+            return;
+        }
+
         try {
             CustomTabsIntent customTabsIntent = new CustomTabsIntent.Builder().build();
             customTabsIntent.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            customTabsIntent.launchUrl(context, Uri.parse(url));
+            customTabsIntent.launchUrl(context, uri);
         } catch (Exception e) {
             Log.w(TAG, "CustomTabs failed, falling back to system browser", e);
             try {
-                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                Intent intent = new Intent(Intent.ACTION_VIEW, uri);
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 context.startActivity(intent);
             } catch (Exception inner) {
