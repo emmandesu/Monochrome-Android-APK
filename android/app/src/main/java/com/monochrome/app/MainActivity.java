@@ -38,6 +38,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(AudioServicePlugin.class);
+        registerPlugin(NativeAudioPlugin.class);
         super.onCreate(savedInstanceState);
 
         // ── #32: WebView hardening (cache, DOM storage, text zoom, media playback) ──
