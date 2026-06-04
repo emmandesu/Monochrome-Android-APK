@@ -1,28 +1,42 @@
 # Fabiodalez Music — Android App
 
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/fabiodalez)
-
 Android wrapper for [Monochrome](https://github.com/monochrome-music/monochrome), a privacy-respecting music streaming application.
+
+This repository contains the Android wrapper, native bridges, build automation, and mobile-specific fixes used to package Monochrome as a Capacitor Android app.
 
 ## Features
 
 - **Background playback** — Foreground Service keeps audio playing when the screen is off
 - **Media controls** — Play/pause/skip in the notification shade, lock screen, and Bluetooth
-- **Battery optimization bypass** — Requests exclusion from Android's battery killer on first launch
-- **Downloads** — Saves tracks to `Downloads/FabiodalezMusic/` with Android notification
-- **Local files** — Select Music Folder works on Android (native folder picker)
-- **OAuth** — Last.fm/Libre.fm authentication via Chrome Custom Tab
-- **Clipboard** — Copy to clipboard works natively
-- **Bluetooth auto-pause** — Music pauses automatically when Bluetooth disconnects
-- **Full UI** — Navigation bar visible, status bar visible with safe area padding
-- **Back navigation** — Back button in header for album/artist/playlist navigation
-- **Branding** — "Fabiodalez Music" name, custom splash screen
+- **Downloads** — Saves tracks to `Downloads/FabiodalezMusic/` with Android notifications
+- **Local files** — Native Android folder picker for local music playback
+- **OAuth** — Last.fm/Libre.fm authentication through Chrome Custom Tabs
+- **Clipboard bridge** — Native copy-to-clipboard support
+- **Bluetooth handling** — Playback controls and disconnect handling through the Android audio service
+- **Mobile UI fixes** — Safe-area padding, larger touch targets, improved grid sizing, and Android back behavior
+- **Streaming instance bootstrap** — Preloads working HiFi API streaming instances for better fresh-install playback
+- **Security defaults** — Backup disabled, cleartext traffic disabled, and external browser bridge URL validation
+- **Branding** — Fabiodalez Music name, icon, splash screen, and Android packaging
 
 ## Requirements
 
-- macOS (with Homebrew)
-- JDK 21 (`brew install openjdk@21`)
-- Android command-line tools (`brew install --cask android-commandlinetools`)
+The build script is currently written for macOS/Homebrew paths.
+
+- macOS
+- Git
+- Node.js + npm
+- JDK 21: `brew install openjdk@21`
+- Android command-line tools: `brew install --cask android-commandlinetools`
+- Android SDK platform/build tools installed through `sdkmanager`
+
+The script expects these paths by default:
+
+```bash
+/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
+/opt/homebrew/share/android-commandlinetools
+```
+
+If your tools are installed somewhere else, edit `JAVA_HOME`, `ANDROID_HOME`, and `ANDROID_SDK_ROOT` near the top of `build-android.sh`.
 
 ## Quick Start
 
@@ -32,69 +46,136 @@ git clone https://github.com/monochrome-music/monochrome.git
 cd monochrome
 git remote rename origin upstream
 
-# 2. Clone this overlay
+# 2. Clone this Android wrapper repo
 cd ..
-git clone https://github.com/fabiodalez-dev/Monochrome-Android-APK
+git clone https://github.com/emmandesu/Monochrome-Android-APK.git
 
-# 3. Install overlay into Monochrome
+# 3. Install wrapper files into the Monochrome clone
 cd Monochrome-Android-APK
 chmod +x install.sh
 ./install.sh ../monochrome
 
-# 4. Build APK
+# 4. Build the APK from the Monochrome clone
 cd ../monochrome
 ./build-android.sh
 ```
 
-The APK will be at `Monochrome-debug.apk`.
+The debug APK will be copied to:
 
-## Updating
+```text
+Monochrome-debug.apk
+```
 
-When Monochrome releases updates:
+## Updating Monochrome
+
+After the wrapper has been installed into the Monochrome clone, run:
 
 ```bash
 cd monochrome
 ./build-android.sh
 ```
 
-The script automatically pulls the latest from upstream, applies patches, builds, and restores all files. **No manual work needed.**
+The script fetches the latest `upstream/main`, applies Android build patches, builds the APK, then cleans up temporary upstream files. The upstream web app stays clean after the build.
 
 ## How It Works
 
-The build script temporarily patches these upstream files during build:
-- `index.html` — adds viewport-fit, script tag, brand name
-- `package.json` — adds Capacitor dependencies
+The build script temporarily patches upstream files during build:
 
-All patches are **reverted after build**. The upstream repo stays clean.
+- `index.html` — injects Android scripts, logger, mobile viewport behavior, brand text, and CDN preconnect hints
+- `package.json` — fixes broken dependency overrides and adds Capacitor requirements
+- `js/storage.js` — adds working streaming instance fallbacks
+- `js/app.js` — improves search debounce behavior
+- `js/ui.js` — enriches album search results with cover/artist data when available from tracks
+- `js/cache.js` — applies cache/query normalization improvements when the upstream pattern is present
+- `js/HiFi.ts` — applies streaming/search fixes when the upstream pattern is present
 
-The Android-specific code lives entirely in:
-- `android/` — Native Java code (foreground service, download bridge, etc.)
-- `android/android-service.js` — JS bridge (media controls, downloads, CSS, back button)
-- `capacitor.config.ts` — Capacitor configuration
-- `build-android.sh` — Build automation
+All patches are reverted automatically at the end of the build.
 
-## Architecture
+## Project Structure
 
+```text
+Monochrome-Android-APK/
+├── android/
+│   ├── android-service.js          # WebView-side Android bridge and UI fixes
+│   ├── fm-logger.js                # Early console logger injection
+│   └── app/
+│       ├── build.gradle            # Android app module config
+│       └── src/main/
+│           ├── AndroidManifest.xml # Permissions, activity, service, provider
+│           ├── java/com/monochrome/app/
+│           │   ├── MainActivity.java
+│           │   ├── AudioForegroundService.java
+│           │   ├── AudioServicePlugin.java
+│           │   ├── DownloadBridge.java
+│           │   ├── LocalFilesBridge.java
+│           │   ├── AndroidBridge.java
+│           │   └── TidalWebViewClient.java
+│           └── res/                # Icons, splash, strings, styles
+├── build-android.sh                # Main build automation
+├── capacitor.config.ts             # Capacitor app/server/plugin config
+└── install.sh                      # Copies wrapper files into a Monochrome clone
 ```
-Monochrome (upstream web app)
-    │
-    ├── Capacitor WebView (wraps the web app)
-    │
-    ├── android-service.js (injected at build time)
-    │   ├── Download handler (monkey-patches <a download>)
-    │   ├── Media controls (MutationObserver on document.title)
-    │   ├── CSS injection (safe areas, layout fixes)
-    │   ├── Back button (history.pushState hook)
-    │   ├── Clipboard override (AndroidBridge)
-    │   └── OAuth override (window.open → Chrome Custom Tab)
-    │
-    └── Native Java
-        ├── AudioForegroundService (MediaSession + notification)
-        ├── AudioServicePlugin (Capacitor bridge)
-        ├── DownloadBridge (MediaStore file saving)
-        ├── LocalFilesBridge (Android folder picker)
-        └── AndroidBridge (clipboard, browser)
+
+## Troubleshooting
+
+### `git fetch upstream` fails
+
+Inside the Monochrome clone, make sure the upstream remote exists:
+
+```bash
+git remote -v
 ```
+
+If it is missing:
+
+```bash
+git remote add upstream https://github.com/monochrome-music/monochrome.git
+```
+
+### JDK or Android SDK not found
+
+Edit the environment variables near the top of `build-android.sh` so they match your machine:
+
+```bash
+export JAVA_HOME=/path/to/jdk-21
+export ANDROID_HOME=/path/to/android-commandlinetools
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+```
+
+### APK builds but playback fails
+
+Check Android Studio Logcat or Chrome WebView debugging:
+
+```text
+chrome://inspect
+```
+
+Useful tags/classes to filter:
+
+- `MainActivity`
+- `AudioForegroundService`
+- `AudioServicePlugin`
+- `TidalWebViewClient`
+- `DownloadBridge`
+- `LocalFilesBridge`
+
+### Downloads do not appear
+
+Downloads should be saved under:
+
+```text
+Downloads/FabiodalezMusic/
+```
+
+On Android 10 and newer this uses MediaStore. On older Android versions, storage permissions may be required.
+
+## Recommended Next Improvements
+
+- Add a GitHub Actions workflow to run a lightweight lint/build check on every push
+- Add a release workflow for signed APK/AAB artifacts
+- Move hardcoded Homebrew paths into environment checks with friendly error messages
+- Add screenshots/GIFs to show the Android UI, splash screen, media notification, and local files picker
+- Consider a `release` build type with ProGuard/R8 rules once the app is stable
 
 ## License
 
