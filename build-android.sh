@@ -6,13 +6,13 @@ set -euo pipefail
 # Pulls latest from GitHub, applies Android patches, builds APK.
 #
 # Patches applied temporarily during build (reverted after):
-#   index.html   — script tag, viewport-fit, brand, CDN preconnect
+#   index.html   — script tag, viewport-fit, brand, CDN/API preconnect
 #   package.json — Capacitor dependencies
-#   js/app.js    — search debounce 3000→500 ms
 #   js/api.js    — search result limit = 100 (was backend default ≈25)
 #   js/cache.js  — per-type TTL + query normalization (trim/lowercase/diacritics)
 #   js/app.js    — search debounce 3000ms → 800ms
-#   js/HiFi.ts   — add artists.profileArt to unified search include (fix Picsum covers)
+#   js/HiFi.ts   — add missing artwork relationships to upstream includes
+#   vite.config  — avoid Workbox CacheFirst for audio/video
 #
 # All reverted automatically on exit. Upstream repo stays clean.
 # ─────────────────────────────────────────────────────────
@@ -158,18 +158,24 @@ sed -i '' 's|</body>|<script type="module" src="./js/android-service.js"></scrip
 # 3c. Brand: "Monochrome" → "Fabiodalez" in sidebar logo
 sed -i '' 's|<span>Monochrome</span>|<span>Fabiodalez</span>|' index.html
 
-# 3d. (#11/#20) Extra CDN preconnect + DNS prefetch for Tidal / api.tidal.com /
-#     streams.tidal.com — reduces first-byte latency on stream URL fetch.
-# Idempotent: only apply if api.tidal.com preconnect is not already present.
+# 3d. Extra preconnect + DNS prefetch for the origins the upstream web app now depends on.
+# This does not change behavior, but it reduces first-load fragility on Android WebView.
 if ! grep -q 'preconnect.*api\.tidal\.com' index.html; then
     sed -i '' 's|<link rel="preconnect" href="https://resources.tidal.com" crossorigin />|<link rel="preconnect" href="https://resources.tidal.com" crossorigin />\
         <link rel="preconnect" href="https://api.tidal.com" crossorigin />\
+        <link rel="preconnect" href="https://auth.monochrome.tf" crossorigin />\
+        <link rel="preconnect" href="https://esm.sh" crossorigin />\
+        <link rel="preconnect" href="https://audio-proxy.binimum.org" crossorigin />\
+        <link rel="preconnect" href="https://tidal-uptime.geeked.wtf" crossorigin />\
         <link rel="dns-prefetch" href="https://streams.tidal.com" />\
         <link rel="dns-prefetch" href="https://cdn.tidal.com" />\
-        <link rel="dns-prefetch" href="https://manifests.tidal.com" />|' index.html
+        <link rel="dns-prefetch" href="https://manifests.tidal.com" />\
+        <link rel="dns-prefetch" href="https://eu-central.monochrome.tf" />\
+        <link rel="dns-prefetch" href="https://us-west.monochrome.tf" />\
+        <link rel="dns-prefetch" href="https://hifi-api.kennyy.com.br" />|' index.html
 fi
 
-echo "  ✓ index.html patched (script tag + viewport-fit + brand + CDN preconnect)."
+echo "  ✓ index.html patched (script tag + viewport-fit + brand + CDN/API preconnect)."
 
 # ── 3e. JS upstream optimizations via Python (multi-line, safer than sed) ──
 # These patches apply *only at build time*; git checkout in the cleanup trap
@@ -201,12 +207,12 @@ def patch(path, before, after, label):
 patch(
     "js/storage.js",
     """                    streaming: [
-                        { url: 'https://hifi.geeked.wtf', version: '2.7' },""",
+                         { url: 'https://hifi.geeked.wtf', version: '2.7' },""",
     """                    streaming: [
-                        { url: 'https://eu-central.monochrome.tf', version: '2.10' },
-                        { url: 'https://us-west.monochrome.tf', version: '2.10' },
-                        { url: 'https://hifi-api.kennyy.com.br', version: '2.10' },
-                        { url: 'https://hifi.geeked.wtf', version: '2.7' },""",
+                         { url: 'https://eu-central.monochrome.tf', version: '2.10' },
+                         { url: 'https://us-west.monochrome.tf', version: '2.10' },
+                         { url: 'https://hifi-api.kennyy.com.br', version: '2.10' },
+                         { url: 'https://hifi.geeked.wtf', version: '2.7' },""",
     "storage.js: add live streaming instances to fallback",
 )
 
@@ -309,7 +315,7 @@ patch(
                 .trim()
                 .toLowerCase()
                 .normalize('NFD')
-                .replace(/[\\u0300-\\u036f]/g, '');
+                .replace(/[\u0300-\u036f]/g, '');
         }
         const paramString = typeof normalized === 'object' ? JSON.stringify(normalized) : String(normalized);
         return `${type}:${paramString}`;
