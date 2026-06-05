@@ -36,8 +36,10 @@ if ! git -C "$TARGET" remote get-url upstream >/dev/null 2>&1; then
     git -C "$TARGET" remote add upstream https://github.com/monochrome-music/monochrome.git
 fi
 
-# Copy build scripts and Capacitor config.
+# Copy build scripts, Android Studio helper, and Capacitor config.
 cp "$SCRIPT_DIR/build-android-windows.sh" "$TARGET/"
+cp "$SCRIPT_DIR/prepare-android-studio-windows.bat" "$TARGET/" 2>/dev/null || true
+cp "$SCRIPT_DIR/ANDROID_STUDIO_WINDOWS.md" "$TARGET/" 2>/dev/null || true
 cp "$SCRIPT_DIR/capacitor.config.ts" "$TARGET/"
 
 # Copy wrapper JS files.
@@ -68,9 +70,16 @@ for dir in mipmap-mdpi mipmap-hdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
 done
 
 # Copy Android app Gradle customizations.
+mkdir -p "$TARGET/android/app"
 cp "$SCRIPT_DIR/android/app/build.gradle" "$TARGET/android/app/"
 
 echo ""
-echo "Done. Now run from Git Bash:"
+echo "Done. You now have two Windows options:"
+echo ""
+echo "Option 1 — Prepare Android Studio project:"
 echo "  cd $TARGET"
-echo "  bash build-android-windows.sh"
+echo "  bash build-android-windows.sh --android-studio"
+echo ""
+echo "Option 2 — Build APK directly from Git Bash:"
+echo "  cd $TARGET"
+echo "  bash build-android-windows.sh --apk"
