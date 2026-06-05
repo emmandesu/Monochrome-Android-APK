@@ -1,6 +1,6 @@
 # Fabiodalez Music — Android App
 
-**Current Android wrapper version:** `2.9.1`
+**Current Android wrapper version:** `2.9.2`
 
 Android wrapper for [Monochrome](https://github.com/monochrome-music/monochrome), a privacy-respecting music streaming application.
 
@@ -10,7 +10,7 @@ This repository contains the Android wrapper, native bridges, build automation, 
 
 This wrapper release is aligned after upstream **Monochrome v2.8.1: Fix Tidal proxy (`tidal-proxy.monochrome.tf`)**.
 
-Wrapper `2.9.1` includes Android-specific fixes and native-audio groundwork on top of the latest upstream web app source pulled during build.
+Wrapper `2.9.2` includes Android-specific fixes, search-stability patches from old `2.8.1` logs, and native-audio groundwork on top of the latest upstream web app source pulled during build.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for release details.
 
@@ -25,6 +25,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for release details.
 - **Bluetooth handling** — Playback controls and disconnect handling through the Android audio service
 - **Mobile UI fixes** — Safe-area padding, larger touch targets, improved grid sizing, and Android back behavior
 - **Streaming instance bootstrap** — Preloads working HiFi API streaming instances for better fresh-install playback
+- **Search stability patches** — Safer Android search limits and Tidal proxy include cleanup
 - **Security defaults** — Backup disabled, cleartext traffic disabled, and external browser bridge URL validation
 - **Native audio test path** — Foreground native PCM tone service for validating Android audio lifecycle behavior
 - **Branding** — Fabiodalez Music name, icon, splash screen, and Android packaging
@@ -113,7 +114,7 @@ The build script temporarily patches upstream files during build:
 - `js/ui.js` — enriches album search results with cover/artist data when available from tracks
 - `js/cache.js` — applies cache/query normalization improvements when the upstream pattern is present
 - `js/api.js` — applies safer Android search result limits
-- `js/HiFi.ts` — applies streaming/search artwork fixes when the upstream pattern is present
+- `js/HiFi.ts` — applies search-stability fixes and safe artist-page artwork fixes when the upstream pattern is present
 - `vite.config.ts` — avoids Workbox `CacheFirst` behavior for audio/video assets
 
 All patches are reverted automatically at the end of the build.
