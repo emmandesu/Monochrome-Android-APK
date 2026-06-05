@@ -6,15 +6,18 @@ set -euo pipefail
 # Pulls latest from GitHub, applies Android patches, builds APK.
 #
 # Patches applied temporarily during build (reverted after):
-#   index.html   — script tag, viewport-fit, brand, CDN/API preconnect
-#   package.json — Capacitor dependencies
-#   js/api.js    — search result limit = 50 (safer upstream/Tidal limit)
-#   js/cache.js  — per-type TTL + query normalization (trim/lowercase/diacritics)
-#   js/app.js    — search debounce 3000ms → 800ms
-#   js/HiFi.ts   — add missing artwork relationships to upstream includes
-#   vite.config  — avoid Workbox CacheFirst for audio/video
+#   index.html     — Android logger/service injection, brand, CDN/API preconnect
+#   package.json   — broken upstream override workaround + Capacitor deps
+#   js/storage.js  — working streaming fallbacks
+#   js/app.js      — mobile search debounce improvement
+#   js/ui.js       — album search enrichment from track data
+#   js/cache.js    — search cache TTL + normalized cache keys
+#   js/api.js      — safer Android search result limit
+#   js/HiFi.ts     — safer Tidal search limit + artist-page album artwork fix
+#   vite.config.ts — avoid Workbox CacheFirst for audio/video media
 #
-# All reverted automatically on exit. Upstream repo stays clean.
+# All patches are applied only to the temporary upstream web app copy.
+# The upstream repo itself stays clean.
 # ─────────────────────────────────────────────────────────
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -31,7 +34,6 @@ cd "$PROJECT_DIR"
 cleanup() {
     echo ""
     echo "▶ Cleaning up patched files..."
-    # Revert tracked files that may have been overwritten by git archive.
     for f in \
         .gitignore \
         android/app/src/main/java/tf/monochrome/music/BackgroundAudioPlugin.java
@@ -40,7 +42,7 @@ cleanup() {
             git checkout -- "$f" 2>/dev/null || true
         fi
     done
-    # Remove all upstream web app files we extracted (they are not tracked in this repo).
+
     rm -rf \
         index.html package.json package-lock.json bun.lock bun.lockb \
         vite.config.ts vite-plugin-auth-gate.js vite-plugin-blob.ts \
@@ -62,9 +64,6 @@ echo "════════════════════════�
 echo "  Fabiodalez Music — Android Build"
 echo "══════════════════════════════════════════"
 
-# ── 1. Pull latest upstream web app source ──
-# This repo tracks only the Android wrapper. Web app files come from upstream.
-# We use git archive (not git pull) because the histories are unrelated.
 echo ""
 echo "▶ Pulling latest from upstream/main..."
 cleanup 2>/dev/null || true
@@ -82,7 +81,6 @@ if [ "$UPSTREAM_SHA" = "$LAST_SHA" ] && [ -f index.html ]; then
 else
     N=$(git rev-list --count "${LAST_SHA:-upstream/main^}..upstream/main" 2>/dev/null || echo "?")
     echo "  $N new commits. Extracting web app from upstream/main..."
-    # Extract upstream web app files, excluding our Android additions and docs.
     git archive upstream/main | tar -x \
         --exclude='capacitor.config.ts' \
         --exclude='README.md' \
@@ -104,31 +102,23 @@ else
     echo "  ✓ Updated to $(git rev-parse --short upstream/main)."
 fi
 
-# ── 2a. Pre-npm patch: fix upstream broken override ──
-# (Upstream package.json "overrides" forces sourcemap-codec@^1.4.14, but
-# npm registry only has up to 1.4.8 — registry package is deprecated in favor
-# of @jridgewell/sourcemap-codec. Downgrade the override so npm install works.)
+# Upstream package.json may reference an invalid sourcemap-codec override.
 if grep -q '"sourcemap-codec": "\^1.4.14"' package.json; then
     sed -i '' 's|"sourcemap-codec": "\^1.4.14"|"sourcemap-codec": "^1.4.8"|' package.json
-    echo "  ✓ package.json: sourcemap-codec override 1.4.14 -> 1.4.8 (broken upstream)"
+    echo "  ✓ package.json: sourcemap-codec override 1.4.14 -> 1.4.8"
 fi
 
-# ── 2b. Install deps + add wrapper-only Capacitor plugins ──
 echo ""
 echo "▶ Installing dependencies..."
 npm install 2>&1 | tail -3
 npm install --save @capacitor/status-bar @capacitor/splash-screen 2>&1 | tail -3
 echo "  ✓ Done."
 
-# ── 2c. Shim @capgo/capacitor-media-session with no-op ──
-# Upstream player.js now imports @capgo/capacitor-media-session for MediaSession.
-# We use our own AudioForegroundService instead (full foreground service, notification,
-# Bluetooth auto-pause, hardware keys). This shim makes the import resolve at
-# Vite build time but all calls become silent no-ops.
+# Upstream imports @capgo/capacitor-media-session. The Android wrapper uses
+# AudioForegroundService instead, so keep this as a build-time no-op shim until
+# we replace it with a real bridge.
 SHIM_DIR="node_modules/@capgo/capacitor-media-session"
-if [ -d "$SHIM_DIR" ]; then
-    rm -rf "$SHIM_DIR"
-fi
+rm -rf "$SHIM_DIR"
 mkdir -p "$SHIM_DIR"
 cat > "$SHIM_DIR/index.js" <<'SHIMEOF'
 export const MediaSession = {
@@ -141,70 +131,66 @@ SHIMEOF
 cat > "$SHIM_DIR/package.json" <<'SHIMEOF'
 {"name":"@capgo/capacitor-media-session","version":"0.0.0-shim","main":"index.js","module":"index.js","type":"module"}
 SHIMEOF
-echo "  ✓ @capgo/capacitor-media-session shimmed (no-op → our AudioForegroundService handles it)."
+echo "  ✓ @capgo/capacitor-media-session shimmed."
 
-# ── 3. HTML patches (sed) ──
 echo ""
 echo "▶ Patching for Android build..."
-
-# 3a. Add script tags
-# Logger FIRST (synchronous, non-module) in <head> — captures ALL console output from start
-sed -i '' 's|</head>|<script src="./js/fm-logger.js"></script></head>|' index.html
-# Service JS LAST (module) in <body> — loads after DOM
-sed -i '' 's|</body>|<script type="module" src="./js/android-service.js"></script></body>|' index.html
-
-# 3b. (workbox audio/video CacheFirst → NetworkOnly is patched via Python below)
-
-# 3c. Brand: "Monochrome" → "Fabiodalez" in sidebar logo
-sed -i '' 's|<span>Monochrome</span>|<span>Fabiodalez</span>|' index.html
-
-# 3d. Extra preconnect + DNS prefetch for the origins the upstream web app now depends on.
-# This does not change behavior, but it reduces first-load fragility on Android WebView.
-if ! grep -q 'preconnect.*api\.tidal\.com' index.html; then
-    sed -i '' 's|<link rel="preconnect" href="https://resources.tidal.com" crossorigin />|<link rel="preconnect" href="https://resources.tidal.com" crossorigin />\
-        <link rel="preconnect" href="https://api.tidal.com" crossorigin />\
-        <link rel="preconnect" href="https://auth.monochrome.tf" crossorigin />\
-        <link rel="preconnect" href="https://esm.sh" crossorigin />\
-        <link rel="preconnect" href="https://audio-proxy.binimum.org" crossorigin />\
-        <link rel="preconnect" href="https://tidal-uptime.geeked.wtf" crossorigin />\
-        <link rel="dns-prefetch" href="https://streams.tidal.com" />\
-        <link rel="dns-prefetch" href="https://cdn.tidal.com" />\
-        <link rel="dns-prefetch" href="https://manifests.tidal.com" />\
-        <link rel="dns-prefetch" href="https://eu-central.monochrome.tf" />\
-        <link rel="dns-prefetch" href="https://us-west.monochrome.tf" />\
-        <link rel="dns-prefetch" href="https://hifi-api.kennyy.com.br" />|' index.html
-fi
-
-echo "  ✓ index.html patched (script tag + viewport-fit + brand + CDN/API preconnect)."
-
-# ── 3e. JS upstream optimizations via Python (multi-line, safer than sed) ──
-# These patches apply *only at build time*; git checkout in the cleanup trap
-# above restores the original files afterwards.
 python3 <<'PYEOF'
-import sys
 import os
+import re
 
 PROJECT_DIR = os.environ.get("PROJECT_DIR", os.getcwd())
 SEARCH_LIMIT = 50
 
+
+def read(path):
+    with open(os.path.join(PROJECT_DIR, path), "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def write(path, content):
+    with open(os.path.join(PROJECT_DIR, path), "w", encoding="utf-8") as f:
+        f.write(content)
+
+
 def patch(path, before, after, label):
-    full = os.path.join(PROJECT_DIR, path)
-    with open(full, "r", encoding="utf-8") as f:
-        src = f.read()
+    src = read(path)
     if before not in src:
-        print("  ! " + label + ": pattern not found, skipping (upstream may have changed)")
+        print("  ! " + label + ": pattern not found, skipping")
         return False
-    src = src.replace(before, after, 1)
-    with open(full, "w", encoding="utf-8") as f:
-        f.write(src)
+    write(path, src.replace(before, after, 1))
     print("  + " + label)
     return True
 
-# ── #53: Add live streaming instances to hardcoded fallback list ──
-# The uptime worker returns streaming:[] so the default list is the only fallback
-# when the network fetch fails on a fresh install. We add the same 3 live instances
-# used in the web app (index.html) and android-service.js localStorage bootstrap.
-# frankfurt-2 was previously here but is now DOWN (504).
+
+# index.html: logger first, Android service last, branding, network hints.
+index = read("index.html")
+if './js/fm-logger.js' not in index:
+    index = index.replace('</head>', '<script src="./js/fm-logger.js"></script></head>', 1)
+if './js/android-service.js' not in index:
+    index = index.replace('</body>', '<script type="module" src="./js/android-service.js"></script></body>', 1)
+index = index.replace('<span>Monochrome</span>', '<span>Fabiodalez</span>', 1)
+if 'preconnect" href="https://api.tidal.com"' not in index:
+    index = index.replace(
+        '<link rel="preconnect" href="https://resources.tidal.com" crossorigin />',
+        '<link rel="preconnect" href="https://resources.tidal.com" crossorigin />\n'
+        '        <link rel="preconnect" href="https://api.tidal.com" crossorigin />\n'
+        '        <link rel="preconnect" href="https://auth.monochrome.tf" crossorigin />\n'
+        '        <link rel="preconnect" href="https://esm.sh" crossorigin />\n'
+        '        <link rel="preconnect" href="https://audio-proxy.binimum.org" crossorigin />\n'
+        '        <link rel="preconnect" href="https://tidal-uptime.geeked.wtf" crossorigin />\n'
+        '        <link rel="dns-prefetch" href="https://streams.tidal.com" />\n'
+        '        <link rel="dns-prefetch" href="https://cdn.tidal.com" />\n'
+        '        <link rel="dns-prefetch" href="https://manifests.tidal.com" />\n'
+        '        <link rel="dns-prefetch" href="https://eu-central.monochrome.tf" />\n'
+        '        <link rel="dns-prefetch" href="https://us-west.monochrome.tf" />\n'
+        '        <link rel="dns-prefetch" href="https://hifi-api.kennyy.com.br" />',
+        1,
+    )
+write("index.html", index)
+print("  + index.html: Android scripts, brand, CDN/API preconnect")
+
+# Storage: add live streaming instances to hardcoded fallback list.
 patch(
     "js/storage.js",
     """                    streaming: [
@@ -214,29 +200,13 @@ patch(
                          { url: 'https://us-west.monochrome.tf', version: '2.10' },
                          { url: 'https://hifi-api.kennyy.com.br', version: '2.10' },
                          { url: 'https://hifi.geeked.wtf', version: '2.7' },""",
-    "storage.js: add live streaming instances to fallback",
+    "storage.js: add live streaming fallbacks",
 )
 
-# ── #54: REMOVED — was forcing native HiFiClient for streaming, which gives
-# only preview (1:40) because the browser client credentials aren't premium.
-# Streaming MUST go through proxy instances (they have premium credentials).
+# Search debounce: 3 seconds feels broken on mobile.
+patch("js/app.js", "}, 3000);", "}, 800);", "app.js: search debounce 3000ms -> 800ms")
 
-# ── #1: debounce 3000ms → 800ms ──
-# 3 seconds after the last keystroke is too slow for mobile. 800ms is the
-# standard for search bars and still avoids firing on every keystroke.
-# "Renders partial queries" is normal search behavior (like Spotify/Google).
-patch(
-    "js/app.js",
-    "}, 3000);",
-    "}, 800);",
-    "app.js: search debounce 3000ms -> 800ms",
-)
-
-# The search limit and cache normalization patches below still apply.
-
-# ── #52: Enrich albums missing artist/cover from track data ──
-# The v2 API often returns albums without artist or cover in search results,
-# but the tracks in the same response DO have this data. Copy it over.
+# Enrich album search rows when upstream album entries are missing artist/cover.
 patch(
     "js/ui.js",
     """            if (finalAlbums.length === 0 && finalTracks.length > 0) {
@@ -258,8 +228,7 @@ patch(
                 finalAlbums = Array.from(albumMap.values());
             }
 
-            // Enrich albums that have no artist or cover from track data
-            // (v2 API search often omits these for album entries, but tracks have them)
+            // Enrich albums that have no artist or cover from track data.
             if (finalAlbums.length > 0 && finalTracks.length > 0) {
                 const trackInfoMap = new Map();
                 finalTracks.forEach((track) => {
@@ -285,12 +254,11 @@ patch(
     "ui.js: enrich albums missing artist/cover from tracks",
 )
 
-# ── #3 + #9 + #10: cache.js — TTL per type, query normalization ──
+# Cache: per-type TTL and search key normalization.
 patch(
     "js/cache.js",
     "        this.ttl = options.ttl || 1000 * 60 * 30;",
     """        this.ttl = options.ttl || 1000 * 60 * 30;
-        // Per-type TTL overrides (search results decay faster than detail pages).
         this.ttlByType = {
             search_all: 1000 * 60 * 10,
             search_tracks: 1000 * 60 * 10,
@@ -311,7 +279,6 @@ patch(
     """    generateKey(type, params) {
         let normalized = params;
         if (typeof params === 'string' && typeof type === 'string' && type.startsWith('search')) {
-            // Normalize: trim + lowercase + strip diacritics so "Björk"/"bjork"/" BJORK " hit the same key.
             normalized = params
                 .trim()
                 .toLowerCase()
@@ -321,7 +288,7 @@ patch(
         const paramString = typeof normalized === 'object' ? JSON.stringify(normalized) : String(normalized);
         return `${type}:${paramString}`;
     }""",
-    "cache.js: query normalization (trim/lowercase/NFD)",
+    "cache.js: query normalization",
 )
 
 patch(
@@ -360,70 +327,25 @@ patch(
     "cache.js: per-type TTL lookup in get()",
 )
 
-# ── #51 (bonus): api.js — explicit &limit=50 on search endpoints.
-# 100 caused repeated upstream 400 responses on Android WebView searches.
-patch(
-    "js/api.js",
-    "const response = await this.fetchWithRetry(`/search/?q=${encodeURIComponent(query)}`, options);",
-    "const response = await this.fetchWithRetry(`/search/?q=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`, options);",
-    "api.js: search() unified — limit=50",
-)
+# API search: limit 100 caused repeated 400 responses in Android logs.
+api_replacements = [
+    ("`/search/?q=${encodeURIComponent(query)}`", "`/search/?q=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`"),
+    ("`/search/?s=${encodeURIComponent(query)}`", "`/search/?s=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`"),
+    ("`/search/?al=${encodeURIComponent(query)}`", "`/search/?al=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`"),
+    ("`/search/?p=${encodeURIComponent(query)}`", "`/search/?p=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`"),
+    ("`/search/?v=${encodeURIComponent(query)}`", "`/search/?v=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`"),
+    ("`/search/?a=${encodeURIComponent(query)}`", "`/search/?a=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`"),
+]
+api = read("js/api.js")
+api_count = 0
+for before, after in api_replacements:
+    if before in api and after not in api:
+        api = api.replace(before, after, 1)
+        api_count += 1
+write("js/api.js", api)
+print(f"  + api.js: Android search limit=50 replacements ({api_count})")
 
-patch(
-    "js/api.js",
-    "const response = await this.fetchWithRetry(`/search/?s=${encodeURIComponent(query)}`, options);",
-    "const response = await this.fetchWithRetry(`/search/?s=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`, options);",
-    "api.js: searchTracks — limit=50",
-)
-
-patch(
-    "js/api.js",
-    "const response = await this.fetchWithRetry(`/search/?al=${encodeURIComponent(query)}`, options);",
-    "const response = await this.fetchWithRetry(`/search/?al=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`, options);",
-    "api.js: searchAlbums — limit=50",
-)
-
-patch(
-    "js/api.js",
-    "const response = await this.fetchWithRetry(`/search/?p=${encodeURIComponent(query)}`, options);",
-    "const response = await this.fetchWithRetry(`/search/?p=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`, options);",
-    "api.js: searchPlaylists — limit=50",
-)
-
-patch(
-    "js/api.js",
-    """const response = await this.fetchWithRetry(`/search/?v=${encodeURIComponent(query)}`, {
-                ...options,
-            });""",
-    """const response = await this.fetchWithRetry(`/search/?v=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`, {
-                ...options,
-            });""",
-    "api.js: searchVideos — limit=50",
-)
-
-# ── searchArtists uses a different query shape, handle separately ──
-# (Pattern may vary — best-effort search by the /search/?a= shape.)
-try:
-    with open(os.path.join(PROJECT_DIR, "js/api.js"), "r", encoding="utf-8") as f:
-        api_src = f.read()
-    import re
-    new_src, n = re.subn(
-        r"(`/search/\?a=\$\{encodeURIComponent\(query\)\})(`)",
-        r"\1&limit=${(options && options.limit) || 50}\2",
-        api_src,
-    )
-    if n > 0:
-        with open(os.path.join(PROJECT_DIR, "js/api.js"), "w", encoding="utf-8") as f:
-            f.write(new_src)
-        print("  + api.js: searchArtists — limit=50")
-    else:
-        print("  ! api.js: searchArtists pattern not found, skipping")
-except Exception as e:
-    print("  ! api.js: searchArtists patch failed: " + str(e))
-
-# ── Workbox: CacheFirst → NetworkOnly for audio/video ──
-# Tidal CDN streams don't serve CORS headers → CacheFirst fails with
-# "no-response" in the service worker → audio won't play.
+# Workbox: never CacheFirst audio/video in Android WebView.
 patch(
     "vite.config.ts",
     "handler: 'CacheFirst',\n                            options: {\n                                cacheName: 'media',",
@@ -431,87 +353,80 @@ patch(
     "vite.config.ts: workbox audio/video CacheFirst -> NetworkOnly",
 )
 
-# ── #55: HiFi.ts unified search — add artists.profileArt to include ──
-# The unified search (q=) omits 'artists.profileArt' from the include list,
-# so artist items in the included array have no profileArt relationships and
-# no artwork entries are returned. resolveArtworkId(item,'profileArt') always
-# returns null → artist.picture = null → getCoverUrl(null) → random Picsum.
-# The per-artist search (a=) already has artists.profileArt — this aligns q=.
-patch(
-    "js/HiFi.ts",
-    "'albums,albums.coverArt,albums.artists,tracks,tracks.artists,tracks.albums,tracks.albums.coverArt,artists,playlists,videos'",
-    "'albums,albums.coverArt,albums.artists,tracks,tracks.artists,tracks.albums,tracks.albums.coverArt,artists,artists.profileArt,playlists,videos'",
-    "HiFi.ts: add artists.profileArt to unified search include (fixes Picsum artist covers)",
-)
+# HiFi.ts: defensive search stability fixes.
+hifi = read("js/HiFi.ts")
+original_hifi = hifi
 
-# ── #56: HiFi.ts artist page — add tracks.albums.coverArt to include ──
-# The artist endpoint includes tracks,tracks.albums (top tracks with album ref)
-# but NOT tracks.albums.coverArt. Album items land in includedMap without the
-# coverArt relationship, so resolveArtworkId(albumItem,'coverArt') returns null
-# → track.album.cover = null → Picsum on every track row in the artist page.
-patch(
-    "js/HiFi.ts",
+# Do NOT add artists.profileArt to unified search. It produced 400 responses from
+# tidal-proxy.monochrome.tf on Android logs. Remove it if a prior patch added it.
+hifi = hifi.replace("artists,artists.profileArt,", "artists,")
+hifi = hifi.replace(",artists.profileArt", "")
+
+# Reduce direct Tidal/OpenAPI search limits where upstream uses 100.
+hifi = hifi.replace("limit: 100", "limit: 50")
+hifi = hifi.replace("limit=100", "limit=50")
+hifi = hifi.replace("limit=${100}", "limit=${50}")
+
+# Keep the safer artist-page track album artwork relationship; this is not part
+# of the unified search request that produced 400s.
+hifi = hifi.replace(
     "include: 'albums,albums.coverArt,tracks,tracks.albums,biography,profileArt',",
     "include: 'albums,albums.coverArt,tracks,tracks.albums,tracks.albums.coverArt,biography,profileArt',",
-    "HiFi.ts: add tracks.albums.coverArt to artist page include (fixes Picsum track covers)",
 )
+
+if hifi != original_hifi:
+    write("js/HiFi.ts", hifi)
+    print("  + HiFi.ts: safer search includes and limit=50")
+else:
+    print("  ! HiFi.ts: no search stability changes applied")
 
 print("  ✓ Upstream JS optimizations applied.")
 PYEOF
 
-echo "  ✓ JS upstream optimizations applied (debounce, cache, limits)."
+echo "  ✓ Android build patches applied."
 
-# ── 4. Copy wrapper JS files from android/ storage ──
+# Copy wrapper JS files from android/ storage.
 cp "$PROJECT_DIR/android/android-service.js" js/android-service.js
-# fm-logger must go into public/js/ so Vite copies it to dist/js/ as a static asset.
-# Putting it in js/ (source dir) would leave it out of the dist/ bundle entirely.
 mkdir -p public/js
 cp "$PROJECT_DIR/android/fm-logger.js" public/js/fm-logger.js
 echo "  ✓ android-service.js + fm-logger.js copied."
 
-# ── 5. Init Capacitor Android if needed ──
+# Init Capacitor Android if needed.
 if [ ! -d "$PROJECT_DIR/android" ]; then
     npx cap add android 2>/dev/null
     echo "  ✓ Android platform added."
 fi
 
-# ── 6. Build web ──
 echo ""
 echo "▶ Building web app..."
 npx vite build 2>&1 | tail -3
 echo "  ✓ Web build complete."
 
-# ── 7. Sync to Android ──
 echo ""
 echo "▶ Syncing to Android..."
 npx cap sync android 2>&1 | tail -2
 echo "  ✓ Synced."
 
-# ── 7b. Fix duplicate splash resources ──
-# Upstream ships splash.png, Capacitor sync generates splash.xml — Gradle fails on duplicates.
+# Upstream can ship splash.png while Capacitor generates splash.xml.
 if [ -f "$PROJECT_DIR/android/app/src/main/res/drawable/splash.png" ] && \
    [ -f "$PROJECT_DIR/android/app/src/main/res/drawable/splash.xml" ]; then
     rm "$PROJECT_DIR/android/app/src/main/res/drawable/splash.png"
     echo "  ✓ Removed duplicate splash.png (keeping splash.xml)."
 fi
 
-# ── 7c. Fix upstream Java typo (Kotlin backticks in BackgroundAudioPlugin.java) ──
-# Commit "mobile contribs" (493ac9f) accidentally used Kotlin-style backticks on
-# @PluginMethod in a .java file. javac rejects them. Strip them before gradle.
+# Upstream typo: Kotlin-style backticks around @PluginMethod in a Java file.
 BGPLUGIN="$PROJECT_DIR/android/app/src/main/java/tf/monochrome/music/BackgroundAudioPlugin.java"
 if [ -f "$BGPLUGIN" ] && grep -q '`@PluginMethod`' "$BGPLUGIN"; then
     sed -i '' 's|`@PluginMethod`|@PluginMethod|g' "$BGPLUGIN"
-    echo "  ✓ Stripped Kotlin backticks from BackgroundAudioPlugin.java (upstream typo fix)."
+    echo "  ✓ Stripped Kotlin backticks from BackgroundAudioPlugin.java."
 fi
 
-# ── 8. Build APK ──
 echo ""
 echo "▶ Building APK..."
 cd "$PROJECT_DIR/android"
 ./gradlew assembleDebug -q
 cd "$PROJECT_DIR"
 
-# ── 9. #48: safer APK copy + size check ──
 if [ -f "$APK_OUTPUT" ]; then
     cp "$APK_OUTPUT" "$APK_COPY"
     if [ -f "$APK_COPY" ]; then
