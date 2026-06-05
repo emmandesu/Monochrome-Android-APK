@@ -15,11 +15,12 @@ const config: CapacitorConfig = {
         allowMixedContent: false,
     },
     plugins: {
-        SystemBars: {
-            insetsHandling: 'css',
+        // Use the official @capacitor/status-bar plugin key. The previous
+        // SystemBars key was ignored by the installed plugin, allowing the
+        // WebView/header to draw underneath the Android status bar on some ROMs.
+        StatusBar: {
             style: 'DARK',
-            hidden: false,
-            statusBarColor: '#1a1a1a',
+            backgroundColor: '#000000',
             overlaysWebView: false,
         },
         // #39: SplashScreen config — no more white flash on launch
