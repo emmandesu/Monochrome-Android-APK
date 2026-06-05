@@ -13,6 +13,8 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +25,7 @@ import java.util.Map;
  *
  * Current native proxy paths:
  * - Tidal CDN audio: adds the Origin/Referer expected by Tidal.
+ * - Upstream audio-proxy URLs: unwraps back to raw Tidal URL, then applies native origin fix.
  * - Monochrome auth API: adds CORS headers so WebView can read account state.
  */
 public class TidalWebViewClient extends BridgeWebViewClient {
@@ -30,6 +33,7 @@ public class TidalWebViewClient extends BridgeWebViewClient {
     private static final String TAG = "TidalWebViewClient";
     private static final String APP_ORIGIN = "https://monochrome.tf";
     private static final String AUTH_HOST = "auth.monochrome.tf";
+    private static final String AUDIO_PROXY_PREFIX = "https://audio-proxy.binimum.org/proxy-audio/";
 
     public TidalWebViewClient(Bridge bridge) {
         super(bridge);
@@ -60,8 +64,22 @@ public class TidalWebViewClient extends BridgeWebViewClient {
     }
 
     private boolean isTidalAudioUrl(String url) {
-        return url.contains(".audio.tidal.com/")
-                || url.contains(".tidal.com/mediatracks/");
+        String normalized = unwrapAudioProxyUrl(url);
+        return normalized.contains(".audio.tidal.com/")
+                || normalized.contains(".tidal.com/mediatracks/")
+                || normalized.matches(".*\\.tidal\\.com/.*\\.(aac|flac|m4a|m4s|mp4|mpd|m3u8)(?:$|[?#]).*");
+    }
+
+    private String unwrapAudioProxyUrl(String url) {
+        if (url == null) return "";
+        if (!url.startsWith(AUDIO_PROXY_PREFIX)) return url;
+
+        String raw = url.substring(AUDIO_PROXY_PREFIX.length());
+        try {
+            return URLDecoder.decode(raw, StandardCharsets.UTF_8.name());
+        } catch (Exception e) {
+            return raw;
+        }
     }
 
     private boolean isMonochromeAuthUrl(Uri uri) {
@@ -70,7 +88,7 @@ public class TidalWebViewClient extends BridgeWebViewClient {
 
     private WebResourceResponse proxyWithTidalOrigin(String url, WebResourceRequest request)
             throws Exception {
-        URL audioUrl = new URL(url);
+        URL audioUrl = new URL(unwrapAudioProxyUrl(url));
         HttpURLConnection conn = (HttpURLConnection) audioUrl.openConnection();
         conn.setRequestMethod(request.getMethod());
 
@@ -78,11 +96,12 @@ public class TidalWebViewClient extends BridgeWebViewClient {
         conn.setRequestProperty("Origin", "https://listen.tidal.com");
         conn.setRequestProperty("Referer", "https://listen.tidal.com/");
 
-        // Copy headers from original request (except Origin/Referer)
+        // Copy headers from original request (except headers that no longer match the unwrapped URL)
         for (Map.Entry<String, String> header : request.getRequestHeaders().entrySet()) {
             String key = header.getKey();
             if (!key.equalsIgnoreCase("Origin")
-                    && !key.equalsIgnoreCase("Referer")) {
+                    && !key.equalsIgnoreCase("Referer")
+                    && !key.equalsIgnoreCase("Host")) {
                 conn.setRequestProperty(key, header.getValue());
             }
         }
@@ -104,6 +123,9 @@ public class TidalWebViewClient extends BridgeWebViewClient {
         Map<String, String> responseHeaders = collectResponseHeaders(conn);
         // Allow the WebView to read the response
         responseHeaders.put("Access-Control-Allow-Origin", "*");
+        responseHeaders.put("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+        responseHeaders.put("Access-Control-Allow-Headers", "Range, Origin, Referer, User-Agent, Accept, Content-Type");
+        responseHeaders.put("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges, Content-Type");
 
         InputStream stream = getResponseStream(conn, responseCode);
 
