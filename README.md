@@ -1,8 +1,18 @@
 # Fabiodalez Music — Android App
 
+**Current Android wrapper version:** `2.9.1`
+
 Android wrapper for [Monochrome](https://github.com/monochrome-music/monochrome), a privacy-respecting music streaming application.
 
 This repository contains the Android wrapper, native bridges, build automation, and mobile-specific fixes used to package Monochrome as a Capacitor Android app.
+
+## Release Alignment
+
+This wrapper release is aligned after upstream **Monochrome v2.8.1: Fix Tidal proxy (`tidal-proxy.monochrome.tf`)**.
+
+Wrapper `2.9.1` includes Android-specific fixes and native-audio groundwork on top of the latest upstream web app source pulled during build.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for release details.
 
 ## Features
 
@@ -16,6 +26,7 @@ This repository contains the Android wrapper, native bridges, build automation, 
 - **Mobile UI fixes** — Safe-area padding, larger touch targets, improved grid sizing, and Android back behavior
 - **Streaming instance bootstrap** — Preloads working HiFi API streaming instances for better fresh-install playback
 - **Security defaults** — Backup disabled, cleartext traffic disabled, and external browser bridge URL validation
+- **Native audio test path** — Foreground native PCM tone service for validating Android audio lifecycle behavior
 - **Branding** — Fabiodalez Music name, icon, splash screen, and Android packaging
 
 ## Native Audio Roadmap
@@ -30,7 +41,7 @@ Recommended first native milestone:
 
 > A native service and bridge that can play a generated PCM sine wave for 30 minutes without underruns while the screen is off.
 
-Only after that works should the project add local-file decode, FFmpeg/libavcodec support, and streaming playback handoff.
+The first milestone is implemented through `NativeAudioToneService` and `NativeAudioPlugin`. Real music decode/streaming handoff is intentionally left for the next phases.
 
 ## Requirements
 
@@ -95,13 +106,15 @@ The script fetches the latest `upstream/main`, applies Android build patches, bu
 
 The build script temporarily patches upstream files during build:
 
-- `index.html` — injects Android scripts, logger, mobile viewport behavior, brand text, and CDN preconnect hints
+- `index.html` — injects Android scripts, logger, mobile viewport behavior, brand text, and CDN/API preconnect hints
 - `package.json` — fixes broken dependency overrides and adds Capacitor requirements
 - `js/storage.js` — adds working streaming instance fallbacks
 - `js/app.js` — improves search debounce behavior
 - `js/ui.js` — enriches album search results with cover/artist data when available from tracks
 - `js/cache.js` — applies cache/query normalization improvements when the upstream pattern is present
-- `js/HiFi.ts` — applies streaming/search fixes when the upstream pattern is present
+- `js/api.js` — applies safer Android search result limits
+- `js/HiFi.ts` — applies streaming/search artwork fixes when the upstream pattern is present
+- `vite.config.ts` — avoids Workbox `CacheFirst` behavior for audio/video assets
 
 All patches are reverted automatically at the end of the build.
 
@@ -109,8 +122,10 @@ All patches are reverted automatically at the end of the build.
 
 ```text
 Monochrome-Android-APK/
+├── CHANGELOG.md
 ├── docs/
-│   └── native-audio-engine.md      # Native playback architecture roadmap
+│   ├── native-audio-engine.md      # Native playback architecture roadmap
+│   └── native-audio-tone-test.md   # Native PCM tone smoke-test guide
 ├── android/
 │   ├── android-service.js          # WebView-side Android bridge and UI fixes
 │   ├── fm-logger.js                # Early console logger injection
@@ -122,6 +137,8 @@ Monochrome-Android-APK/
 │           │   ├── MainActivity.java
 │           │   ├── AudioForegroundService.java
 │           │   ├── AudioServicePlugin.java
+│           │   ├── NativeAudioPlugin.java
+│           │   ├── NativeAudioToneService.java
 │           │   ├── DownloadBridge.java
 │           │   ├── LocalFilesBridge.java
 │           │   ├── AndroidBridge.java
@@ -171,9 +188,15 @@ Useful tags/classes to filter:
 - `MainActivity`
 - `AudioForegroundService`
 - `AudioServicePlugin`
+- `NativeAudioPlugin`
+- `NativeAudioToneService`
 - `TidalWebViewClient`
 - `DownloadBridge`
 - `LocalFilesBridge`
+
+### Native audio tone test
+
+See [`docs/native-audio-tone-test.md`](docs/native-audio-tone-test.md).
 
 ### Downloads do not appear
 
@@ -187,8 +210,9 @@ On Android 10 and newer this uses MediaStore. On older Android versions, storage
 
 ## Recommended Next Improvements
 
-- Add a native audio service shell and Capacitor `NativeAudio` plugin
-- Add a native PCM/sine-wave playback smoke test before attempting streaming
+- Add native local-file decode through a PCM ring buffer
+- Add native stream fetch/decode pipeline after local-file decode is stable
+- Replace the no-op upstream MediaSession shim with a bridge into the native foreground service
 - Add a GitHub Actions workflow to run a lightweight lint/build check on every push
 - Add a release workflow for signed APK/AAB artifacts
 - Move hardcoded Homebrew paths into environment checks with friendly error messages
