@@ -7,23 +7,45 @@ set -euo pipefail
 # Run from the Monochrome web app clone after installing the wrapper:
 #   bash build-android-windows.sh
 #
+# Android Studio option:
+#   bash build-android-windows.sh --android-studio
+#
 # Requirements:
 #   - Git for Windows / Git Bash
 #   - Node.js + npm installed on Windows
 #   - Android Studio or Android command-line tools installed on Windows
-#   - JDK 21 installed on Windows
-#
-# Optional environment variables:
-#   JAVA_HOME
-#   ANDROID_HOME
-#   ANDROID_SDK_ROOT
+#   - JDK 21 installed on Windows, or Android Studio bundled JBR
 # ─────────────────────────────────────────────────────────
+
+MODE="apk"
+for arg in "$@"; do
+    case "$arg" in
+        --android-studio|--studio|studio)
+            MODE="android-studio"
+            ;;
+        --apk|apk)
+            MODE="apk"
+            ;;
+        -h|--help)
+            echo "Usage: bash build-android-windows.sh [--apk|--android-studio]"
+            echo ""
+            echo "  --apk             Build Monochrome-debug.apk"
+            echo "  --android-studio  Prepare monochrome/android so it can be opened in Android Studio"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $arg"
+            echo "Run: bash build-android-windows.sh --help"
+            exit 1
+            ;;
+    esac
+done
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APK_OUTPUT="$PROJECT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
 APK_COPY="$PROJECT_DIR/Monochrome-debug.apk"
+export PROJECT_DIR
 
-# Convert common Windows paths into Git Bash paths when needed.
 win_to_unix_path() {
     local p="${1:-}"
     if [ -z "$p" ]; then
@@ -33,7 +55,15 @@ win_to_unix_path() {
     cygpath -u "$p" 2>/dev/null || echo "$p"
 }
 
-# Auto-detect Android SDK from common Windows locations.
+to_windows_path() {
+    local p="${1:-}"
+    if [ -z "$p" ]; then
+        echo ""
+        return
+    fi
+    cygpath -m "$p" 2>/dev/null || echo "$p"
+}
+
 detect_android_home() {
     if [ -n "${ANDROID_HOME:-}" ] && [ -d "$(win_to_unix_path "$ANDROID_HOME")" ]; then
         win_to_unix_path "$ANDROID_HOME"
@@ -51,7 +81,6 @@ detect_android_home() {
     echo ""
 }
 
-# Auto-detect JDK from common Windows locations.
 detect_java_home() {
     if [ -n "${JAVA_HOME:-}" ] && [ -d "$(win_to_unix_path "$JAVA_HOME")" ]; then
         win_to_unix_path "$JAVA_HOME"
@@ -72,7 +101,6 @@ detect_java_home() {
         fi
     done
 
-    # Fallback: choose first jdk-21* folder if present.
     local found
     found=$(find "/c/Program Files" -maxdepth 3 -type d -iname "jdk-21*" 2>/dev/null | head -n 1 || true)
     if [ -n "$found" ]; then
@@ -95,8 +123,8 @@ if [ -z "$ANDROID_HOME_DETECTED" ]; then
 fi
 
 if [ -z "$JAVA_HOME_DETECTED" ]; then
-    echo "✗ JDK 21 not found."
-    echo "Install JDK 21 or Android Studio, then set JAVA_HOME if needed."
+    echo "✗ JDK 21 / Android Studio JBR not found."
+    echo "Install Android Studio or JDK 21, then set JAVA_HOME if needed."
     echo "Example in Git Bash:"
     echo "  export JAVA_HOME='/c/Program Files/Android/Android Studio/jbr'"
     exit 1
@@ -136,11 +164,15 @@ cleanup() {
     rm -rf node_modules/@capgo/capacitor-media-session 2>/dev/null || true
     echo "  ✓ Upstream web app files removed."
 }
-trap cleanup EXIT
+
+if [ "$MODE" = "apk" ]; then
+    trap cleanup EXIT
+fi
 
 echo "══════════════════════════════════════════"
 echo "  Fabiodalez Music — Android Build for Windows"
 echo "══════════════════════════════════════════"
+echo "Mode:         $MODE"
 echo "Project:      $PROJECT_DIR"
 echo "JAVA_HOME:    $JAVA_HOME"
 echo "ANDROID_HOME: $ANDROID_HOME"
@@ -151,6 +183,10 @@ command -v git >/dev/null || { echo "✗ git not found"; exit 1; }
 command -v npm >/dev/null || { echo "✗ npm not found. Install Node.js."; exit 1; }
 command -v npx >/dev/null || { echo "✗ npx not found. Install Node.js."; exit 1; }
 command -v java >/dev/null || { echo "✗ java not found in JAVA_HOME/bin."; exit 1; }
+if ! command -v python >/dev/null; then
+    echo "✗ python not found. Install Python 3 or enable Python launcher in Windows PATH."
+    exit 1
+fi
 echo "  ✓ Tools found."
 
 if ! git remote get-url upstream >/dev/null 2>&1; then
@@ -169,9 +205,9 @@ LAST_SHA=$(cat "$SYNC_FILE" 2>/dev/null || echo "")
 
 if [ "$UPSTREAM_SHA" = "$LAST_SHA" ] && [ -f index.html ]; then
     echo "  Already up to date ($(git rev-parse --short upstream/main))."
-    read -p "  Build anyway? (y/N) " -n 1 -r
+    read -p "  Continue anyway? (Y/n) " -n 1 -r
     echo
-    [[ ! $REPLY =~ ^[Yy]$ ]] && exit 0
+    [[ $REPLY =~ ^[Nn]$ ]] && exit 0
 else
     N=$(git rev-list --count "${LAST_SHA:-upstream/main^}..upstream/main" 2>/dev/null || echo "?")
     echo "  $N new commits. Extracting web app from upstream/main..."
@@ -196,14 +232,13 @@ else
     echo "  ✓ Updated to $(git rev-parse --short upstream/main)."
 fi
 
-# Upstream package.json may reference an invalid sourcemap-codec override.
 if grep -q '"sourcemap-codec": "\^1.4.14"' package.json; then
     python - <<'PYEOF'
 from pathlib import Path
 p = Path('package.json')
 s = p.read_text(encoding='utf-8')
 s = s.replace('"sourcemap-codec": "^1.4.14"', '"sourcemap-codec": "^1.4.8"')
-p.write_text(s, encoding='utf-8')
+p.write_text(s, encoding='utf-8', newline='\n')
 PYEOF
     echo "  ✓ package.json: sourcemap-codec override 1.4.14 -> 1.4.8"
 fi
@@ -214,9 +249,6 @@ npm install 2>&1 | tail -3
 npm install --save @capacitor/status-bar @capacitor/splash-screen 2>&1 | tail -3
 echo "  ✓ Done."
 
-# Upstream imports @capgo/capacitor-media-session. The Android wrapper uses
-# AudioForegroundService instead, so keep this as a build-time no-op shim until
-# we replace it with a real bridge.
 SHIM_DIR="node_modules/@capgo/capacitor-media-session"
 rm -rf "$SHIM_DIR"
 mkdir -p "$SHIM_DIR"
@@ -240,16 +272,13 @@ import os
 
 PROJECT_DIR = os.environ.get("PROJECT_DIR", os.getcwd())
 
-
 def read(path):
     with open(os.path.join(PROJECT_DIR, path), "r", encoding="utf-8") as f:
         return f.read()
 
-
 def write(path, content):
     with open(os.path.join(PROJECT_DIR, path), "w", encoding="utf-8", newline="\n") as f:
         f.write(content)
-
 
 def patch(path, before, after, label):
     src = read(path)
@@ -260,7 +289,6 @@ def patch(path, before, after, label):
     print("  + " + label)
     return True
 
-# index.html: logger first, Android service last, branding, network hints.
 index = read("index.html")
 if './js/fm-logger.js' not in index:
     index = index.replace('</head>', '<script src="./js/fm-logger.js"></script></head>', 1)
@@ -298,9 +326,7 @@ patch(
                          { url: 'https://hifi.geeked.wtf', version: '2.7' },""",
     "storage.js: add live streaming fallbacks",
 )
-
 patch("js/app.js", "}, 3000);", "}, 800);", "app.js: search debounce 3000ms -> 800ms")
-
 patch(
     "js/ui.js",
     """            if (finalAlbums.length === 0 && finalTracks.length > 0) {
@@ -322,7 +348,6 @@ patch(
                 finalAlbums = Array.from(albumMap.values());
             }
 
-            // Enrich albums that have no artist or cover from track data.
             if (finalAlbums.length > 0 && finalTracks.length > 0) {
                 const trackInfoMap = new Map();
                 finalTracks.forEach((track) => {
@@ -347,7 +372,6 @@ patch(
             }""",
     "ui.js: enrich albums missing artist/cover from tracks",
 )
-
 patch(
     "js/cache.js",
     "        this.ttl = options.ttl || 1000 * 60 * 30;",
@@ -362,7 +386,6 @@ patch(
         };""",
     "cache.js: per-type TTL map",
 )
-
 patch(
     "js/cache.js",
     """    generateKey(type, params) {
@@ -383,7 +406,6 @@ patch(
     }""",
     "cache.js: query normalization",
 )
-
 patch(
     "js/cache.js",
     """    async get(type, params) {
@@ -419,7 +441,6 @@ patch(
                 if (cached && Date.now() - cached.timestamp < effectiveTtl) {""",
     "cache.js: per-type TTL lookup in get()",
 )
-
 api_replacements = [
     ("`/search/?q=${encodeURIComponent(query)}`", "`/search/?q=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`"),
     ("`/search/?s=${encodeURIComponent(query)}`", "`/search/?s=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`"),
@@ -436,14 +457,12 @@ for before, after in api_replacements:
         api_count += 1
 write("js/api.js", api)
 print(f"  + api.js: Android search limit=50 replacements ({api_count})")
-
 patch(
     "vite.config.ts",
     "handler: 'CacheFirst',\n                            options: {\n                                cacheName: 'media',",
     "handler: 'NetworkOnly',\n                            options: {\n                                cacheName: 'media',",
     "vite.config.ts: workbox audio/video CacheFirst -> NetworkOnly",
 )
-
 hifi = read("js/HiFi.ts")
 original_hifi = hifi
 hifi = hifi.replace("artists,artists.profileArt,", "artists,")
@@ -460,7 +479,6 @@ if hifi != original_hifi:
     print("  + HiFi.ts: safer search includes and limit=50")
 else:
     print("  ! HiFi.ts: no search stability changes applied")
-
 print("  ✓ Upstream JS optimizations applied.")
 PYEOF
 
@@ -471,6 +489,12 @@ mkdir -p public/js
 cp "$PROJECT_DIR/android/fm-logger.js" public/js/fm-logger.js
 echo "  ✓ android-service.js + fm-logger.js copied."
 
+if [ ! -f "$PROJECT_DIR/android/settings.gradle" ]; then
+    echo ""
+    echo "▶ Android platform files missing. Adding Capacitor Android platform..."
+    npx cap add android 2>&1 | tail -5 || true
+fi
+
 echo ""
 echo "▶ Building web app..."
 npx vite build 2>&1 | tail -3
@@ -480,6 +504,10 @@ echo ""
 echo "▶ Syncing to Android..."
 npx cap sync android 2>&1 | tail -2
 echo "  ✓ Synced."
+
+mkdir -p "$PROJECT_DIR/android"
+printf 'sdk.dir=%s\n' "$(to_windows_path "$ANDROID_HOME")" > "$PROJECT_DIR/android/local.properties"
+echo "  ✓ android/local.properties written."
 
 if [ -f "$PROJECT_DIR/android/app/src/main/res/drawable/splash.png" ] && \
    [ -f "$PROJECT_DIR/android/app/src/main/res/drawable/splash.xml" ]; then
@@ -499,19 +527,33 @@ PYEOF
     echo "  ✓ Stripped Kotlin backticks from BackgroundAudioPlugin.java."
 fi
 
+if [ "$MODE" = "android-studio" ]; then
+    echo ""
+    echo "══════════════════════════════════════════"
+    echo "  Android Studio project is ready"
+    echo "══════════════════════════════════════════"
+    echo "Open this folder in Android Studio:"
+    echo "  $(to_windows_path "$PROJECT_DIR/android")"
+    echo ""
+    echo "Then use: Build > Build Bundle(s) / APK(s) > Build APK(s)"
+    echo "Output APK will be under:"
+    echo "  $(to_windows_path "$PROJECT_DIR/android/app/build/outputs/apk/debug")"
+    echo ""
+    echo "No cleanup was performed because Android Studio mode keeps generated files."
+    exit 0
+fi
+
 echo ""
 echo "▶ Building APK..."
 cd "$PROJECT_DIR/android"
-
-if [ -f ./gradlew ]; then
-    bash ./gradlew assembleDebug -q
-elif [ -f ./gradlew.bat ]; then
+if [ -f ./gradlew.bat ]; then
     ./gradlew.bat assembleDebug -q
+elif [ -f ./gradlew ]; then
+    bash ./gradlew assembleDebug -q
 else
     echo "✗ Gradle wrapper not found. npx cap sync android should have created it."
     exit 1
 fi
-
 cd "$PROJECT_DIR"
 
 if [ -f "$APK_OUTPUT" ]; then
