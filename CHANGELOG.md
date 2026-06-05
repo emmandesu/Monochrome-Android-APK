@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.9.2
+
+Android wrapper maintenance release after reviewing old **2.8.1** APK logs.
+
+### Fixed
+
+- Stabilized Android search build patches against repeated upstream `400` responses.
+- Removed the risky unified-search `artists.profileArt` include that could be rejected by `tidal-proxy.monochrome.tf`.
+- Added defensive cleanup so previously patched unified search includes are normalized during Android builds.
+- Reduced direct HiFi/Tidal search limits to `50` where upstream code still used `100`.
+- Simplified the Android build patch flow to make future upstream syncs easier to maintain.
+
+### Notes
+
+- This release should be rebuilt before comparing new logs. Old `2.8.1` logs still show `limit=100` and do not include these fixes.
+- The native audio service remains a generated-PCM smoke test only; real decode and streaming handoff are still future phases.
+
 ## 2.9.1
 
 Android wrapper release aligned after upstream **v2.8.1: Fix Tidal proxy (`tidal-proxy.monochrome.tf`)**.
