@@ -8,7 +8,7 @@ set -euo pipefail
 # Patches applied temporarily during build (reverted after):
 #   index.html   — script tag, viewport-fit, brand, CDN/API preconnect
 #   package.json — Capacitor dependencies
-#   js/api.js    — search result limit = 100 (was backend default ≈25)
+#   js/api.js    — search result limit = 50 (safer upstream/Tidal limit)
 #   js/cache.js  — per-type TTL + query normalization (trim/lowercase/diacritics)
 #   js/app.js    — search debounce 3000ms → 800ms
 #   js/HiFi.ts   — add missing artwork relationships to upstream includes
@@ -185,6 +185,7 @@ import sys
 import os
 
 PROJECT_DIR = os.environ.get("PROJECT_DIR", os.getcwd())
+SEARCH_LIMIT = 50
 
 def patch(path, before, after, label):
     full = os.path.join(PROJECT_DIR, path)
@@ -231,7 +232,7 @@ patch(
     "app.js: search debounce 3000ms -> 800ms",
 )
 
-# The limit=100 and cache normalization patches below still apply.
+# The search limit and cache normalization patches below still apply.
 
 # ── #52: Enrich albums missing artist/cover from track data ──
 # The v2 API often returns albums without artist or cover in search results,
@@ -359,34 +360,34 @@ patch(
     "cache.js: per-type TTL lookup in get()",
 )
 
-# ── #51 (bonus): api.js — explicit &limit=100 on all search endpoints so a
-# prolific artist returns all their albums/tracks, not just the backend default (~25).
+# ── #51 (bonus): api.js — explicit &limit=50 on search endpoints.
+# 100 caused repeated upstream 400 responses on Android WebView searches.
 patch(
     "js/api.js",
     "const response = await this.fetchWithRetry(`/search/?q=${encodeURIComponent(query)}`, options);",
-    "const response = await this.fetchWithRetry(`/search/?q=${encodeURIComponent(query)}&limit=${(options && options.limit) || 100}`, options);",
-    "api.js: search() unified — limit=100",
+    "const response = await this.fetchWithRetry(`/search/?q=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`, options);",
+    "api.js: search() unified — limit=50",
 )
 
 patch(
     "js/api.js",
     "const response = await this.fetchWithRetry(`/search/?s=${encodeURIComponent(query)}`, options);",
-    "const response = await this.fetchWithRetry(`/search/?s=${encodeURIComponent(query)}&limit=${(options && options.limit) || 100}`, options);",
-    "api.js: searchTracks — limit=100",
+    "const response = await this.fetchWithRetry(`/search/?s=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`, options);",
+    "api.js: searchTracks — limit=50",
 )
 
 patch(
     "js/api.js",
     "const response = await this.fetchWithRetry(`/search/?al=${encodeURIComponent(query)}`, options);",
-    "const response = await this.fetchWithRetry(`/search/?al=${encodeURIComponent(query)}&limit=${(options && options.limit) || 100}`, options);",
-    "api.js: searchAlbums — limit=100",
+    "const response = await this.fetchWithRetry(`/search/?al=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`, options);",
+    "api.js: searchAlbums — limit=50",
 )
 
 patch(
     "js/api.js",
     "const response = await this.fetchWithRetry(`/search/?p=${encodeURIComponent(query)}`, options);",
-    "const response = await this.fetchWithRetry(`/search/?p=${encodeURIComponent(query)}&limit=${(options && options.limit) || 100}`, options);",
-    "api.js: searchPlaylists — limit=100",
+    "const response = await this.fetchWithRetry(`/search/?p=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`, options);",
+    "api.js: searchPlaylists — limit=50",
 )
 
 patch(
@@ -394,10 +395,10 @@ patch(
     """const response = await this.fetchWithRetry(`/search/?v=${encodeURIComponent(query)}`, {
                 ...options,
             });""",
-    """const response = await this.fetchWithRetry(`/search/?v=${encodeURIComponent(query)}&limit=${(options && options.limit) || 100}`, {
+    """const response = await this.fetchWithRetry(`/search/?v=${encodeURIComponent(query)}&limit=${(options && options.limit) || 50}`, {
                 ...options,
             });""",
-    "api.js: searchVideos — limit=100",
+    "api.js: searchVideos — limit=50",
 )
 
 # ── searchArtists uses a different query shape, handle separately ──
@@ -408,13 +409,13 @@ try:
     import re
     new_src, n = re.subn(
         r"(`/search/\?a=\$\{encodeURIComponent\(query\)\})(`)",
-        r"\1&limit=${(options && options.limit) || 100}\2",
+        r"\1&limit=${(options && options.limit) || 50}\2",
         api_src,
     )
     if n > 0:
         with open(os.path.join(PROJECT_DIR, "js/api.js"), "w", encoding="utf-8") as f:
             f.write(new_src)
-        print("  + api.js: searchArtists — limit=100")
+        print("  + api.js: searchArtists — limit=50")
     else:
         print("  ! api.js: searchArtists pattern not found, skipping")
 except Exception as e:
